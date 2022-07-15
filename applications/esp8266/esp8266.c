@@ -2,6 +2,8 @@
 #include <gui/gui.h>
 #include <input/input.h>
 #include <stdlib.h>
+//#include "gpio/usb_uart_bridge.h"
+#include "furi_hal.h"
 
 typedef enum {
     EventTypeTick,
@@ -18,8 +20,12 @@ typedef struct {
     int y;
 } PluginState;
 
+// 0: 13,14
+// 1: 15,16
+const int uart_ch = 0;
+
 static void state_init(PluginState* const plugin_state) {
-    plugin_state->x = 50;
+    plugin_state->x = 100;
     plugin_state->y = 30;
 }
 
@@ -43,6 +49,46 @@ static void render_callback(Canvas* const canvas, void* ctx) {
         canvas, plugin_state->x, plugin_state->y, AlignRight, AlignBottom, "Hello World");
 
     release_mutex((ValueMutex*)ctx, plugin_state);
+}
+
+static void usb_uart_serial_deinit() {
+    FURI_LOG_D("ESP8266", "Deinitializing Serial RX");
+
+    furi_hal_uart_set_irq_cb(uart_ch, NULL, NULL);
+    if(uart_ch == FuriHalUartIdUSART1)
+        furi_hal_console_enable();
+    else if(uart_ch == FuriHalUartIdLPUART1)
+        furi_hal_uart_deinit(uart_ch);
+}
+
+// Callback for when data is received from the ESP8266.
+static void usb_uart_on_irq_cb(UartIrqEvent ev, uint8_t data, void* context) {
+    UNUSED(data);
+    UNUSED(context);
+    // UsbUartBridge* usb_uart = (UsbUartBridge*)context;
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+    FURI_LOG_D("ESP8266", "Called Back.");
+
+    if(ev == UartIrqEventRXNE) {
+        FURI_LOG_D("ESP8266", "Received Data.");
+        // xStreamBufferSendFromISR(usb_uart->rx_stream, &data, 1, &xHigherPriorityTaskWoken);
+        // furi_thread_flags_set(furi_thread_get_id(usb_uart->thread), WorkerEvtRxDone);
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
+
+    usb_uart_serial_deinit();
+}
+
+static void usb_uart_serial_init() {
+    FURI_LOG_D("ESP8266", "Initializing Serial RX");
+
+    if(uart_ch == FuriHalUartIdUSART1) {
+        furi_hal_console_disable();
+    } else if(uart_ch == FuriHalUartIdLPUART1) {
+        furi_hal_uart_init(uart_ch, 115200);
+    }
+    furi_hal_uart_set_irq_cb(uart_ch, usb_uart_on_irq_cb, NULL);
 }
 
 int32_t esp8266_app(void* p) {
@@ -92,6 +138,7 @@ int32_t esp8266_app(void* p) {
                         plugin_state->x--;
                         break;
                     case InputKeyOk:
+                        usb_uart_serial_init();
                         break;
                     case InputKeyBack:
                         // Exit the plugin
@@ -109,6 +156,7 @@ int32_t esp8266_app(void* p) {
         release_mutex(&state_mutex, plugin_state);
     }
 
+    usb_uart_serial_deinit();
     view_port_enabled_set(view_port, false);
     gui_remove_view_port(gui, view_port);
     furi_record_close("gui");
