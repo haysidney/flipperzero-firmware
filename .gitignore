@@ -50,3 +50,6 @@ build/
 
 # openocd output file
 openocd.log
+
+# Personal
+firmware/targets/f7/furi_hal/furi_hal_subghz.c
