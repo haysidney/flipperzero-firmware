@@ -3,6 +3,7 @@
 #include "furi_hal.h"
 #include <gui/elements.h>
 #include <storage/storage.h>
+#include <dialogs/dialogs.h>
 
 #define LogTag "USB-UART"
 
@@ -92,6 +93,30 @@ static void gpio_usb_uart_draw_callback(Canvas* canvas, void* _model) {
         canvas_draw_icon(canvas, 48, 34, &I_ArrowDownEmpty_14x15);
 }
 
+static void loadFile(Storage* storage, string_t file_path) {
+    File* file = storage_file_alloc(storage);
+    storage_file_open(file, string_get_cstr(file_path), FSAM_READ, FSOM_OPEN_ALWAYS);
+
+    uint64_t fileSize = storage_file_size(file);
+
+    uint8_t fileData[fileSize];
+
+    storage_file_read(file, fileData, fileSize);
+
+    storage_file_close(file);
+    storage_file_free(file);
+
+    furi_hal_uart_tx(FuriHalUartIdUSART1, fileData, fileSize);
+
+    FURI_LOG_D(LogTag, "Acquiring mutex");
+    uint32_t* tx_count = (uint32_t*)acquire_mutex_block(&recent_injected_tx_count_mutex);
+    *tx_count += fileSize;
+    FURI_LOG_D(LogTag, "");
+
+    FURI_LOG_D(LogTag, "Releasing mutex");
+    release_mutex(&recent_injected_tx_count_mutex, tx_count);
+}
+
 static bool gpio_usb_uart_input_callback(InputEvent* event, void* context) {
     furi_assert(context);
     GpioUsbUart* usb_uart = context;
@@ -110,29 +135,25 @@ static bool gpio_usb_uart_input_callback(InputEvent* event, void* context) {
             FURI_LOG_D(LogTag, "Right Pressed");
 
             Storage* storage = furi_record_open("storage");
+            storage_simply_mkdir(storage, "/any/uart");
 
-            File* file = storage_file_alloc(storage);
-            storage_file_open(file, "/any/uart/Right.txt", FSAM_READ, FSOM_OPEN_ALWAYS);
+            string_t file_path;
+            string_init(file_path);
 
-            uint64_t fileSize = storage_file_size(file);
+            string_t uart_folder;
+            string_init_set_str(uart_folder, "/any/uart");
 
-            uint8_t fileData[fileSize];
+            DialogsApp* dialogs = furi_record_open("dialogs");
+            bool success = dialog_file_browser_show(
+                dialogs, file_path, uart_folder, ".txt", true, NULL, true);
+            furi_record_close("dialogs");
 
-            storage_file_read(file, fileData, fileSize);
+            if(success) {
+                loadFile(storage, file_path);
+            }
 
-            storage_file_close(file);
-            storage_file_free(file);
             furi_record_close("storage");
-
-            furi_hal_uart_tx(FuriHalUartIdUSART1, fileData, fileSize);
-
-            FURI_LOG_D(LogTag, "Acquiring mutex");
-            uint32_t* tx_count = (uint32_t*)acquire_mutex_block(&recent_injected_tx_count_mutex);
-            *tx_count += fileSize;
-            FURI_LOG_D(LogTag, "");
-
-            FURI_LOG_D(LogTag, "Releasing mutex");
-            release_mutex(&recent_injected_tx_count_mutex, tx_count);
+            string_clear(file_path);
         }
     }
 
