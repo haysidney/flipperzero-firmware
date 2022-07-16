@@ -183,6 +183,9 @@ void gpio_usb_uart_free(GpioUsbUart* usb_uart) {
     free(usb_uart);
 
     FURI_LOG_D(LogTag, "Deleting mutex");
+    uint32_t* tx_count = (uint32_t*)acquire_mutex(&recent_injected_tx_count_mutex, 1000);
+    *tx_count = 0;
+    release_mutex(&recent_injected_tx_count_mutex, tx_count);
     delete_mutex(&recent_injected_tx_count_mutex);
 }
 
