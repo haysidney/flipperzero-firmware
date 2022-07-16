@@ -2,6 +2,9 @@
 #include "../gpio_app_i.h"
 #include "furi_hal.h"
 #include <gui/elements.h>
+#include <storage/storage.h>
+
+#define LogTag "USB-UART"
 
 struct GpioUsbUart {
     View* view;
@@ -19,6 +22,10 @@ typedef struct {
     bool tx_active;
     bool rx_active;
 } GpioUsbUartModel;
+
+// Used to increment the tx counter for injected messages
+static uint32_t recent_injected_tx_count = 0;
+static ValueMutex recent_injected_tx_count_mutex;
 
 static void gpio_usb_uart_draw_callback(Canvas* canvas, void* _model) {
     GpioUsbUartModel* model = _model;
@@ -90,11 +97,42 @@ static bool gpio_usb_uart_input_callback(InputEvent* event, void* context) {
     GpioUsbUart* usb_uart = context;
     bool consumed = false;
 
+    // TODO Add Canned Commands to send
     if(event->type == InputTypeShort) {
         if(event->key == InputKeyLeft) {
             consumed = true;
             furi_assert(usb_uart->callback);
             usb_uart->callback(GpioUsbUartEventConfig, usb_uart->context);
+        } else if(event->key == InputKeyRight) {
+            consumed = true;
+            // TODO What does this do?
+            furi_assert(usb_uart->callback);
+            FURI_LOG_D(LogTag, "Right Pressed");
+
+            Storage* storage = furi_record_open("storage");
+
+            File* file = storage_file_alloc(storage);
+            storage_file_open(file, "/any/uart/Right.txt", FSAM_READ, FSOM_OPEN_ALWAYS);
+
+            uint64_t fileSize = storage_file_size(file);
+
+            uint8_t fileData[fileSize];
+
+            storage_file_read(file, fileData, fileSize);
+
+            storage_file_close(file);
+            storage_file_free(file);
+            furi_record_close("storage");
+
+            furi_hal_uart_tx(FuriHalUartIdUSART1, fileData, fileSize);
+
+            FURI_LOG_D(LogTag, "Acquiring mutex");
+            uint32_t* tx_count = (uint32_t*)acquire_mutex_block(&recent_injected_tx_count_mutex);
+            *tx_count += fileSize;
+            FURI_LOG_D(LogTag, "");
+
+            FURI_LOG_D(LogTag, "Releasing mutex");
+            release_mutex(&recent_injected_tx_count_mutex, tx_count);
         }
     }
 
@@ -102,6 +140,11 @@ static bool gpio_usb_uart_input_callback(InputEvent* event, void* context) {
 }
 
 GpioUsbUart* gpio_usb_uart_alloc() {
+    FURI_LOG_D(LogTag, "Creating mutex");
+    if(!init_mutex(&recent_injected_tx_count_mutex, &recent_injected_tx_count, sizeof(uint32_t))) {
+        FURI_LOG_E(LogTag, "cannot create mutex");
+    }
+
     GpioUsbUart* usb_uart = malloc(sizeof(GpioUsbUart));
 
     usb_uart->view = view_alloc();
@@ -117,6 +160,9 @@ void gpio_usb_uart_free(GpioUsbUart* usb_uart) {
     furi_assert(usb_uart);
     view_free(usb_uart->view);
     free(usb_uart);
+
+    FURI_LOG_D(LogTag, "Deleting mutex");
+    delete_mutex(&recent_injected_tx_count_mutex);
 }
 
 View* gpio_usb_uart_get_view(GpioUsbUart* usb_uart) {
@@ -141,6 +187,17 @@ void gpio_usb_uart_update_state(GpioUsbUart* instance, UsbUartConfig* cfg, UsbUa
     furi_assert(instance);
     furi_assert(cfg);
     furi_assert(st);
+
+    // FURI_LOG_D(LogTag, "Acquiring mutex");
+    uint32_t* tx_count = (uint32_t*)acquire_mutex(&recent_injected_tx_count_mutex, 10);
+
+    if(tx_count != NULL) {
+        st->tx_cnt += *tx_count;
+        // FURI_LOG_D(LogTag, "Releasing mutex");
+        release_mutex(&recent_injected_tx_count_mutex, tx_count);
+    } else {
+        FURI_LOG_D(LogTag, "Mutex acquisition timeout.");
+    }
 
     with_view_model(
         instance->view, (GpioUsbUartModel * model) {
